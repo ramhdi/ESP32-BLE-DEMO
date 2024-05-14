@@ -252,12 +252,29 @@ static int ble_svc_gatt_handler(uint16_t conn_handle, uint16_t attr_handle,
         case BLE_GATT_ACCESS_OP_READ_CHR:
             MODLOG_DFLT(INFO, "Callback for read");
             break;
-        case BLE_GATT_ACCESS_OP_WRITE_CHR:
+
+        case BLE_GATT_ACCESS_OP_WRITE_CHR: {
+            // Log the basic event info
             MODLOG_DFLT(
                 INFO,
                 "Data received in write event, conn_handle=%x, attr_handle=%x",
                 conn_handle, attr_handle);
-            break;
+
+            // Access the data written to the characteristic
+            uint8_t *data = ctxt->om->om_data;  // Pointer to the data buffer
+            uint16_t len = ctxt->om->om_len;    // Length of the data
+
+            // Assuming the data is UTF-8 encoded, null-terminate it for safe
+            // printing. Make sure there is enough space or reduce length to
+            // avoid buffer overflow.
+            char buf[len + 1];
+            memcpy(buf, data, len);
+            buf[len] = '\0';  // Null-terminate the string
+
+            // Log the received string
+            MODLOG_DFLT(INFO, "Received data: %s", buf);
+        } break;
+
         default:
             MODLOG_DFLT(INFO, "Default Callback");
             break;
