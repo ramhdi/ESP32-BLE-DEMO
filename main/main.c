@@ -1,6 +1,5 @@
 #include "ble_spp_server.h"
 #include "console/console.h"
-#include "driver/uart.h"
 #include "esp_log.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
@@ -17,11 +16,25 @@ int gatt_svr_register(void);
 // Global variables
 static uint8_t own_addr_type;
 static uint16_t ble_spp_svc_gatt_read_val_handle;
-QueueHandle_t spp_common_uart_queue = NULL;
 static bool conn_handle_subs[CONFIG_BT_NIMBLE_MAX_CONNECTIONS + 1];
 
 // Initializes the BLE storage configuration
 void ble_store_config_init(void);
+
+/**
+ * Create a memory buffer from a string
+ *
+ * @param str Input string
+ */
+struct os_mbuf *create_mbuf_from_string(const char *str) {
+    struct os_mbuf *om;
+    size_t len;
+
+    len = strlen(str);
+    om = ble_hs_mbuf_from_flat(str, len);
+
+    return om;
+}
 
 /**
  * Prints detailed information about a BLE connection.
@@ -370,70 +383,41 @@ int gatt_svr_init(void) {
  *
  * @param pvParameters not used
  */
-void ble_server_uart_task(void *pvParameters) {
-    MODLOG_DFLT(INFO, "BLE server UART_task started\n");
-    uart_event_t event;
+void ble_server_hello_task(void *pvParameters) {
+    static uint32_t count = 0;
+    char buf[64];
+
+    MODLOG_DFLT(INFO, "BLE server Hello_task started\n");
 
     for (;;) {
-        // Wait for UART event indefinitely
-        if (xQueueReceive(spp_common_uart_queue, (void *)&event,
-                          portMAX_DELAY)) {
-            if (event.type == UART_DATA && event.size > 0) {
-                uint8_t *ntf = (uint8_t *)malloc(event.size);
-                memset(ntf, 0, event.size);
-                uart_read_bytes(UART_NUM_0, ntf, event.size, portMAX_DELAY);
+        // Format the string with the increasing integer
+        snprintf(buf, sizeof(buf), "Hello, world! %ld\n", count++);
 
-                // Iterate over possible connections to send notifications
-                for (int i = 0; i <= CONFIG_BT_NIMBLE_MAX_CONNECTIONS; i++) {
-                    if (conn_handle_subs[i]) {
-                        struct os_mbuf *txom =
-                            ble_hs_mbuf_from_flat(ntf, event.size);
-                        int rc = ble_gatts_notify_custom(
-                            i, ble_spp_svc_gatt_read_val_handle, txom);
-                        if (rc == 0) {
-                            MODLOG_DFLT(INFO, "Notification sent successfully");
-                        } else {
-                            MODLOG_DFLT(INFO,
-                                        "Error in sending notification rc = %d",
-                                        rc);
-                        }
-                    }
+        // Iterate over possible connections to send notifications
+        for (int i = 0; i <= CONFIG_BT_NIMBLE_MAX_CONNECTIONS; i++) {
+            if (conn_handle_subs[i]) {
+                struct os_mbuf *txom =
+                    create_mbuf_from_string((const char *)(buf));
+                if (txom == NULL) {
+                    MODLOG_DFLT(ERROR, "Failed to create mbuf from string\n");
+                    continue;
                 }
 
-                free(ntf);
+                int rc = ble_gatts_notify_custom(
+                    i, ble_spp_svc_gatt_read_val_handle, txom);
+                if (rc == 0) {
+                    MODLOG_DFLT(INFO, "Notification sent successfully");
+                } else {
+                    MODLOG_DFLT(INFO, "Error in sending notification rc = %d",
+                                rc);
+                }
             }
         }
+
+        vTaskDelay(pdMS_TO_TICKS(10000));  // Wait for 10 seconds
     }
+
     vTaskDelete(NULL);
-}
-
-/**
- * Initializes the UART for communication.
- */
-static void ble_spp_uart_init(void) {
-    uart_config_t uart_config = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_RTS,
-        .rx_flow_ctrl_thresh = 122,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
-
-    // Install UART driver and get the queue
-    uart_driver_install(UART_NUM_0, 4096, 8192, 10, &spp_common_uart_queue, 0);
-
-    // Configure UART parameters
-    uart_param_config(UART_NUM_0, &uart_config);
-
-    // Set UART pins (default pins are used here)
-    uart_set_pin(UART_NUM_0, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE,
-                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-
-    // Create a FreeRTOS task for the UART server
-    xTaskCreate(ble_server_uart_task, "uTask", 4096, (void *)UART_NUM_0, 8,
-                NULL);
 }
 
 /**
@@ -465,8 +449,8 @@ void app_main(void) {
         conn_handle_subs[i] = false;
     }
 
-    // Initialize UART driver and start the UART task for BLE
-    ble_spp_uart_init();
+    // Create a FreeRTOS task for the Hello task
+    xTaskCreate(ble_server_hello_task, "uTask", 4096, NULL, 8, NULL);
 
     // Configure BLE host stack callbacks
     ble_hs_cfg.reset_cb = ble_spp_server_on_reset;  // Callback for stack reset
